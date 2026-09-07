@@ -15,9 +15,11 @@ SEED = 42
 N_REGIMES = 6
 OP_COLS = ["op1", "op2", "op3"]
 
-# FD001/FD003 op-setting std is ~0.002 (sensor noise); FD002/FD004 regimes
-# are separated by tens of units. Anything under 1.0 is clearly the former.
-SINGLE_CONDITION_STD_THRESHOLD = 1.0
+# Measured (notebooks/eda_regimes.ipynb): worst-case single-condition std is
+# op2 at ~0.0003, worst-case multi-condition std is also op2 at ~0.31. 0.1
+# sits between both, so every column independently discriminates correctly
+# (unlike 1.0, which relied on op1/op3 to compensate for op2 alone).
+SINGLE_CONDITION_STD_THRESHOLD = 0.1
 
 
 @dataclass
