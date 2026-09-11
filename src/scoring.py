@@ -96,6 +96,44 @@ def evaluate_at_final_cycle(
     }
 
 
+def last_window_per_unit(df: pd.DataFrame, feature_cols: list[str], window: int) -> list[np.ndarray]:
+    """Per unit, its last up-to-`window` cycles of feature values, in
+    order, unit ascending (matching RUL_FDxxx.txt order). Shorter than
+    `window` only for engines truncated below it -- fed to the model as-is,
+    no padding (Option A)."""
+    sequences = []
+    for unit, group in df.sort_values(["unit", "cycle"]).groupby("unit"):
+        sequences.append((unit, group[feature_cols].to_numpy(dtype=np.float32)[-window:]))
+    sequences.sort(key=lambda pair: pair[0])
+    return [seq for _, seq in sequences]
+
+
+def evaluate_sequence_model_at_final_cycle(
+    model, test_df: pd.DataFrame, feature_cols: list[str], rul_true: pd.Series, window: int
+) -> dict:
+    """LSTM equivalent of evaluate_at_final_cycle: one prediction per
+    engine from its real (possibly shorter-than-window) final sequence,
+    scored against RUL_FDxxx.txt. test_df must already be scaled with the
+    same scaler the model was trained with."""
+    sequences = last_window_per_unit(test_df, feature_cols, window)
+
+    assert len(sequences) == len(rul_true), (
+        f"sequence count ({len(sequences)}) does not match RUL row count ({len(rul_true)})"
+    )
+
+    y_true = rul_true.reset_index(drop=True).to_numpy()
+    y_pred = np.array([
+        model.predict(seq[np.newaxis, :, :], verbose=0)[0, 0] for seq in sequences
+    ])
+
+    return {
+        "rmse": rmse(y_true, y_pred),
+        "nasa_score": nasa_score(y_true, y_pred),
+        "y_true": y_true,
+        "y_pred": y_pred,
+    }
+
+
 def group_kfold_cv(
     estimator_fn,
     df: pd.DataFrame,
