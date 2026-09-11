@@ -1,0 +1,121 @@
+# RMSE, the NASA asymmetric scoring function, and the two evaluation paths
+# CLAUDE.md requires kept separate: GroupKFold cross-validation on training
+# data, and one-prediction-per-engine scoring at each test unit's final
+# recorded cycle against RUL_FDxxx.txt.
+
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import GroupKFold
+
+# Middle ground between 5 (cheaper, standard) and 10 (more stable, costlier)
+# folds, picked before models.py existed to run a real sensitivity check.
+# Revisit once that check (train at a couple of k values, compare how much
+# CV RMSE varies across folds) can be run.
+N_SPLITS = 7
+
+# GroupKFold has no random_state -- its split is a deterministic assignment
+# of groups to folds (no shuffling), not a randomized one. The seed=42 rule
+# still applies to the model trained inside each fold.
+SEED = 42
+
+
+def rmse(y_true, y_pred) -> float:
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+
+
+def nasa_score(y_true, y_pred) -> float:
+    """Asymmetric penalty from dataset-reference.md: d = predicted - true.
+    Early (d < 0) is penalized gently, late (d >= 0) is penalized harshly,
+    since a late prediction means the engine fails before maintenance."""
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    d = y_pred - y_true
+    penalty = np.where(d < 0, np.exp(-d / 13) - 1, np.exp(d / 10) - 1)
+    return float(penalty.sum())
+
+
+def last_cycle_per_unit(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per unit: its last recorded cycle. Test files are truncated
+    mid-life, so this is the row the true RUL in RUL_FDxxx.txt refers to."""
+    return (
+        df.sort_values(["unit", "cycle"])
+        .groupby("unit", as_index=False)
+        .tail(1)
+        .sort_values("unit")
+        .reset_index(drop=True)
+    )
+
+
+def evaluate_at_final_cycle(
+    model, test_df: pd.DataFrame, feature_cols: list[str], rul_true: pd.Series
+) -> dict:
+    """One prediction per engine, at its final cycle, scored against the
+    matching RUL_FDxxx.txt. Not row-by-row -- that would score cycles a
+    maintenance decision was never actually made at."""
+    last_rows = last_cycle_per_unit(test_df)
+
+    assert len(last_rows) == len(rul_true), (
+        f"last-cycle row count ({len(last_rows)}) does not match "
+        f"RUL row count ({len(rul_true)})"
+    )
+
+    y_true = rul_true.reset_index(drop=True).to_numpy()
+    y_pred = model.predict(last_rows[feature_cols])
+
+    return {
+        "rmse": rmse(y_true, y_pred),
+        "nasa_score": nasa_score(y_true, y_pred),
+        "y_true": y_true,
+        "y_pred": y_pred,
+    }
+
+
+def group_kfold_cv(
+    estimator_fn,
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    target_col: str,
+    n_splits: int = N_SPLITS,
+) -> list[float]:
+    """RMSE per fold, splitting by unit so a single engine's history never
+    lands on both sides of a fold. For cross-validation inside the training
+    data only -- test scoring is evaluate_at_final_cycle, not this."""
+    gkf = GroupKFold(n_splits=n_splits)
+    groups = df["unit"]
+
+    fold_rmses = []
+    for train_idx, val_idx in gkf.split(df[feature_cols], df[target_col], groups):
+        train_fold = df.iloc[train_idx]
+        val_fold = df.iloc[val_idx]
+
+        model = estimator_fn()
+        model.fit(train_fold[feature_cols], train_fold[target_col])
+        y_pred = model.predict(val_fold[feature_cols])
+
+        fold_rmses.append(rmse(val_fold[target_col], y_pred))
+
+    return fold_rmses
+
+
+if __name__ == "__main__":
+    # Sanity check against dataset-reference.md's worked description: a
+    # perfect prediction scores 0 on both metrics, and a late prediction
+    # is penalized more than an equally-sized early one.
+    y_true = np.array([50.0, 50.0, 50.0])
+    y_pred_perfect = np.array([50.0, 50.0, 50.0])
+    y_pred_early = np.array([50.0, 50.0, 40.0])
+    y_pred_late = np.array([50.0, 50.0, 60.0])
+
+    assert rmse(y_true, y_pred_perfect) == 0.0
+    assert nasa_score(y_true, y_pred_perfect) == 0.0
+
+    early_penalty = nasa_score(y_true, y_pred_early)
+    late_penalty = nasa_score(y_true, y_pred_late)
+    assert late_penalty > early_penalty, "a late prediction must be penalized harder than an equal-sized early one"
+
+    print("rmse/nasa_score sanity checks passed")
+    print(f"  perfect: rmse={rmse(y_true, y_pred_perfect)}, nasa_score={nasa_score(y_true, y_pred_perfect)}")
+    print(f"  10-cycle early: nasa_score={early_penalty:.4f}")
+    print(f"  10-cycle late:  nasa_score={late_penalty:.4f}")
