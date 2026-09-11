@@ -55,7 +55,9 @@ if __name__ == "__main__":
     )
     from src.load import DATASETS, load_rul, load_test, load_train
     from src.regimes import apply_regimes, fit_regimes
-    from src.scoring import N_SPLITS, evaluate_at_final_cycle, group_kfold_cv
+    from src.scoring import N_SPLITS, evaluate_at_final_cycle, group_kfold_cv, late_side_reduction_pct
+
+    late_reductions = []
 
     for dataset in DATASETS:
         train = load_train(dataset)
@@ -85,6 +87,11 @@ if __name__ == "__main__":
         baseline_result = evaluate_at_final_cycle(baseline_model, test_feat, feature_cols, rul_true)
         xgb_result = evaluate_at_final_cycle(xgb_model, test_feat, feature_cols, rul_true)
 
+        late_reduction = late_side_reduction_pct(
+            baseline_result["y_true"], baseline_result["y_pred"], xgb_result["y_pred"]
+        )
+        late_reductions.append(late_reduction)
+
         print(f"{dataset}:")
         print(f"  {len(feature_cols)} feature columns ({len(varying_sensors)} varying sensors)")
         print(f"  GroupKFold(n_splits={N_SPLITS}) CV RMSE (capped target): "
@@ -93,3 +100,8 @@ if __name__ == "__main__":
               f"rmse={baseline_result['rmse']:.2f}, nasa_score={baseline_result['nasa_score']:.2f}")
         print(f"  test @ final cycle -- xgboost (capped):  "
               f"rmse={xgb_result['rmse']:.2f}, nasa_score={xgb_result['nasa_score']:.2f}")
+        print(f"  late-side penalty reduction vs uncapped baseline: {late_reduction:.2f}%")
+
+    print(f"\nheadline: mean late-side penalty reduction across all four datasets: "
+          f"{sum(late_reductions) / len(late_reductions):.2f}%")
+    print(f"  per-dataset: {[round(r, 2) for r in late_reductions]}")

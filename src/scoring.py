@@ -36,6 +36,30 @@ def nasa_score(y_true, y_pred) -> float:
     return float(penalty.sum())
 
 
+def late_side_penalty_sum(y_true, y_pred) -> float:
+    """Sum of the NASA score's late-penalty term (d = predicted - true >= 0)
+    only, ignoring early predictions entirely. Captures total late-failure
+    risk exposure -- both how often the model is late and how badly -- not
+    average severity conditional on being late."""
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    d = y_pred - y_true
+    late_d = d[d >= 0]
+    return float((np.exp(late_d / 10) - 1).sum())
+
+
+def late_side_reduction_pct(y_true, y_pred_baseline, y_pred_final) -> float:
+    """Percentage drop in summed late-side penalty, final model vs the
+    uncapped-RUL baseline (required output 2 in CLAUDE.md). Positive means
+    the final model carries less total late-failure risk."""
+    baseline_penalty = late_side_penalty_sum(y_true, y_pred_baseline)
+    final_penalty = late_side_penalty_sum(y_true, y_pred_final)
+
+    assert baseline_penalty > 0, "baseline has zero late-side penalty -- reduction % is undefined"
+
+    return (baseline_penalty - final_penalty) / baseline_penalty * 100
+
+
 def last_cycle_per_unit(df: pd.DataFrame) -> pd.DataFrame:
     """One row per unit: its last recorded cycle. Test files are truncated
     mid-life, so this is the row the true RUL in RUL_FDxxx.txt refers to."""
@@ -119,3 +143,12 @@ if __name__ == "__main__":
     print(f"  perfect: rmse={rmse(y_true, y_pred_perfect)}, nasa_score={nasa_score(y_true, y_pred_perfect)}")
     print(f"  10-cycle early: nasa_score={early_penalty:.4f}")
     print(f"  10-cycle late:  nasa_score={late_penalty:.4f}")
+
+    # An all-early baseline has zero late-side penalty; a baseline with one
+    # late miss should show 100% reduction once the final model fixes it.
+    assert late_side_penalty_sum(y_true, y_pred_early) == 0.0
+    baseline_one_late = np.array([50.0, 50.0, 90.0])  # one engine 40 cycles late
+    final_fixed = np.array([50.0, 50.0, 50.0])  # same engine, now on time
+    reduction = late_side_reduction_pct(y_true, baseline_one_late, final_fixed)
+    assert reduction == 100.0
+    print(f"  late-side reduction sanity check (baseline has 1 late miss, final fixes it): {reduction:.1f}%")
