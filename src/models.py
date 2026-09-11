@@ -17,6 +17,12 @@ from tensorflow import keras
 
 from src.load import SENSOR_COLS
 
+# TF's default CPU ops are multi-threaded and not perfectly order-independent
+# in floating point, so tf.random.set_seed alone doesn't make LSTM training
+# byte-reproducible run to run. This pins it down, at a modest training-speed
+# cost, so seed=42 means what CLAUDE.md says it should mean for the LSTM too.
+tf.config.experimental.enable_op_determinism()
+
 SEED = 42
 
 # cycle, operational settings, and the regime label aren't sensors, so the
