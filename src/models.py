@@ -51,23 +51,49 @@ def build_feature_cols(varying_sensors: list[str]) -> list[str]:
     return cols
 
 
-def make_xgb_model() -> xgb.XGBRegressor:
-    return xgb.XGBRegressor(random_state=SEED)
+def make_xgb_model(**hyperparams) -> xgb.XGBRegressor:
+    """hyperparams overrides XGBoost defaults -- per-dataset tuned values
+    from notebooks/eda_tuning_fd002_fd004.ipynb, looked up via
+    XGB_HYPERPARAMS. Empty for datasets that weren't tuned (FD001/FD003),
+    which keeps them on the same untouched defaults as before."""
+    return xgb.XGBRegressor(random_state=SEED, **hyperparams)
 
 
-def train_uncapped_baseline(train_df, feature_cols: list[str]) -> xgb.XGBRegressor:
+def train_uncapped_baseline(train_df, feature_cols: list[str], **hyperparams) -> xgb.XGBRegressor:
     """Ablation baseline: identical model and features to train_xgboost,
     trained on uncapped `rul` instead of `rul_capped`. Isolates the effect
-    of the RUL cap, not algorithm choice, per the locked decision 3 cap."""
-    model = make_xgb_model()
+    of the RUL cap, not algorithm choice, per the locked decision 3 cap.
+    Takes the same hyperparams as train_xgboost so tuning doesn't also
+    introduce a hyperparameter difference into that isolation."""
+    model = make_xgb_model(**hyperparams)
     model.fit(train_df[feature_cols], train_df["rul"])
     return model
 
 
-def train_xgboost(train_df, feature_cols: list[str]) -> xgb.XGBRegressor:
-    model = make_xgb_model()
+def train_xgboost(train_df, feature_cols: list[str], **hyperparams) -> xgb.XGBRegressor:
+    model = make_xgb_model(**hyperparams)
     model.fit(train_df[feature_cols], train_df["rul_capped"])
     return model
+
+
+# Per-dataset XGBoost hyperparameter overrides found in
+# notebooks/eda_tuning_fd002_fd004.ipynb (RandomizedSearchCV, GroupKFold
+# CV, FD002/FD004 only -- FD001/FD003 keep XGBoost's plain defaults, empty
+# dict here). Improvement confirmed real against the per-dataset CV
+# noise floor measured in eda_cv_folds.ipynb (FD002 ~0.94 RMSE gain vs. a
+# ~0.32 fold-count noise floor; FD004 ~0.78 gain vs. a ~0.12 floor).
+XGB_HYPERPARAMS: dict[str, dict] = {
+    "FD001": {},
+    "FD002": {
+        "n_estimators": 500, "max_depth": 4, "learning_rate": 0.03,
+        "subsample": 0.6, "colsample_bytree": 0.8, "min_child_weight": 3,
+    },
+    "FD003": {},
+    "FD004": {
+        "n_estimators": 300, "max_depth": 6, "learning_rate": 0.03,
+        "subsample": 0.8, "colsample_bytree": 0.6, "min_child_weight": 5,
+    },
+}
 
 
 # LSTM
@@ -112,16 +138,31 @@ def make_sliding_windows(
     return np.stack(X_list), np.array(y_list, dtype=np.float32), np.array(group_list)
 
 
-def make_lstm_model(num_features: int, units: int = LSTM_UNITS, dropout: float = LSTM_DROPOUT) -> keras.Model:
+def make_lstm_model(
+    num_features: int,
+    units: int = LSTM_UNITS,
+    dropout: float = LSTM_DROPOUT,
+    num_layers: int = 1,
+    bidirectional: bool = False,
+) -> keras.Model:
     """Variable-length time dimension (None, not a fixed 30) so the same
     trained weights handle both full training windows and the shorter real
-    sequences short FD002/FD004 test units have -- Option A, no padding."""
-    model = keras.Sequential([
-        keras.layers.Input(shape=(None, num_features)),
-        keras.layers.LSTM(units),
-        keras.layers.Dropout(dropout),
-        keras.layers.Dense(1, activation="relu"),  # RUL can't be negative
-    ])
+    sequences short FD002/FD004 test units have -- Option A, no padding.
+    num_layers > 1 stacks LSTM layers (each but the last returns full
+    sequences, feeding the next one), tried in the FD002/FD004 tuning pass
+    as a way to let the model build a regime-level representation before a
+    degradation-level one. bidirectional wraps each LSTM layer to also read
+    the window back to front -- legitimate here (not future-peeking) since
+    each window is already a fixed, fully-known slice of the past by the
+    time the model sees it; tried after research turned up a published
+    bidirectional-LSTM result specifically beating plain/CNN-LSTM on FD002."""
+    layers = [keras.layers.Input(shape=(None, num_features))]
+    for i in range(num_layers):
+        lstm_layer = keras.layers.LSTM(units, return_sequences=i < num_layers - 1)
+        layers.append(keras.layers.Bidirectional(lstm_layer) if bidirectional else lstm_layer)
+    layers.append(keras.layers.Dropout(dropout))
+    layers.append(keras.layers.Dense(1, activation="relu"))  # RUL can't be negative
+    model = keras.Sequential(layers)
     model.compile(optimizer="adam", loss="mse", metrics=[keras.metrics.RootMeanSquaredError(name="rmse")])
     return model
 
@@ -132,6 +173,10 @@ def train_lstm(
     scaler: StandardScaler,
     target_col: str = "rul_capped",
     window: int = LSTM_WINDOW,
+    units: int = LSTM_UNITS,
+    dropout: float = LSTM_DROPOUT,
+    num_layers: int = 1,
+    bidirectional: bool = False,
     val_fraction: float = LSTM_VAL_FRACTION,
     seed: int = SEED,
 ) -> keras.Model:
@@ -143,7 +188,9 @@ def train_lstm(
     train_idx, val_idx = next(splitter.split(X, y, groups))
 
     tf.random.set_seed(seed)
-    model = make_lstm_model(num_features=X.shape[-1])
+    model = make_lstm_model(
+        num_features=X.shape[-1], units=units, dropout=dropout, num_layers=num_layers, bidirectional=bidirectional
+    )
     early_stop = keras.callbacks.EarlyStopping(monitor="val_loss", patience=LSTM_PATIENCE, restore_best_weights=True)
 
     model.fit(
@@ -155,6 +202,17 @@ def train_lstm(
         verbose=2,
     )
     return model
+
+
+# Per-dataset LSTM hyperparameter overrides (window/units/dropout/num_layers)
+# found in notebooks/eda_tuning_fd002_fd004.ipynb -- same rationale as
+# XGB_HYPERPARAMS: FD001/FD003 keep the untouched defaults above.
+LSTM_HYPERPARAMS: dict[str, dict] = {
+    "FD001": {},
+    "FD002": {},
+    "FD003": {},
+    "FD004": {},
+}
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupKFold
 
+from src.features import RUL_CAP
+
 # Middle ground between 5 (cheaper, standard) and 10 (more stable, costlier)
 # folds, picked before models.py existed to run a real sensitivity check.
 # Revisit once that check (train at a couple of k values, compare how much
@@ -72,6 +74,32 @@ def last_cycle_per_unit(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _labeling_convention_metrics(y_true: np.ndarray, y_pred: np.ndarray, rul_cap: int = RUL_CAP) -> dict:
+    """Three descriptively-labeled scorings of the same predictions, not one
+    "correct" one picked for you -- which convention published benchmarks
+    used for their test labels (raw vs. capped-at-125) was never verified,
+    so this reports all three rather than asserting an unconfirmed match:
+    raw-label (score against RUL_FDxxx.txt as-is, the stricter measure),
+    capped-label (score against min(true, cap) -- what a chunk of the
+    C-MAPSS literature does to test labels too, matching train), and
+    below-cap-subset (only test units whose true RUL is already <= cap,
+    where raw and capped labels are identical by construction -- so this
+    one carries no convention ambiguity at all)."""
+    y_true_capped = np.minimum(y_true, rul_cap)
+    below_mask = y_true <= rul_cap
+
+    return {
+        "rmse_raw_label": rmse(y_true, y_pred),
+        "nasa_score_raw_label": nasa_score(y_true, y_pred),
+        "rmse_capped_label": rmse(y_true_capped, y_pred),
+        "nasa_score_capped_label": nasa_score(y_true_capped, y_pred),
+        "rmse_below_cap_subset": rmse(y_true[below_mask], y_pred[below_mask]),
+        "nasa_score_below_cap_subset": nasa_score(y_true[below_mask], y_pred[below_mask]),
+        "n_below_cap_subset": int(below_mask.sum()),
+        "pct_below_cap_subset": float(below_mask.mean() * 100),
+    }
+
+
 def evaluate_at_final_cycle(
     model, test_df: pd.DataFrame, feature_cols: list[str], rul_true: pd.Series
 ) -> dict:
@@ -93,6 +121,7 @@ def evaluate_at_final_cycle(
         "nasa_score": nasa_score(y_true, y_pred),
         "y_true": y_true,
         "y_pred": y_pred,
+        **_labeling_convention_metrics(y_true, y_pred),
     }
 
 
@@ -131,6 +160,7 @@ def evaluate_sequence_model_at_final_cycle(
         "nasa_score": nasa_score(y_true, y_pred),
         "y_true": y_true,
         "y_pred": y_pred,
+        **_labeling_convention_metrics(y_true, y_pred),
     }
 
 

@@ -4,6 +4,7 @@
 # (FD001 final-model test RMSE, headline late-side reduction %) explicitly.
 
 import argparse
+from functools import partial
 from pathlib import Path
 
 import matplotlib
@@ -21,7 +22,9 @@ from src.features import (
 )
 from src.load import DATASETS, SENSOR_COLS, load_rul, load_test, load_train
 from src.models import (
+    LSTM_HYPERPARAMS,
     LSTM_WINDOW,
+    XGB_HYPERPARAMS,
     build_feature_cols,
     fit_lstm_scaler,
     make_xgb_model,
@@ -67,10 +70,16 @@ def run_dataset(dataset: str) -> dict:
 
     feature_cols = build_feature_cols(varying_sensors)
 
-    cv_rmses = group_kfold_cv(make_xgb_model, train_feat, feature_cols, "rul_capped")
+    xgb_hyperparams = XGB_HYPERPARAMS.get(dataset, {})
+    lstm_hyperparams = LSTM_HYPERPARAMS.get(dataset, {})
+    lstm_window = lstm_hyperparams.get("window", LSTM_WINDOW)
 
-    baseline_model = train_uncapped_baseline(train_feat, feature_cols)
-    xgb_model = train_xgboost(train_feat, feature_cols)
+    cv_rmses = group_kfold_cv(
+        partial(make_xgb_model, **xgb_hyperparams), train_feat, feature_cols, "rul_capped"
+    )
+
+    baseline_model = train_uncapped_baseline(train_feat, feature_cols, **xgb_hyperparams)
+    xgb_model = train_xgboost(train_feat, feature_cols, **xgb_hyperparams)
 
     baseline_result = evaluate_at_final_cycle(baseline_model, test_feat, feature_cols, rul_true)
     xgb_result = evaluate_at_final_cycle(xgb_model, test_feat, feature_cols, rul_true)
@@ -80,23 +89,36 @@ def run_dataset(dataset: str) -> dict:
     )
 
     lstm_scaler = fit_lstm_scaler(train_feat, feature_cols)
-    lstm_model = train_lstm(train_feat, feature_cols, lstm_scaler)
+    lstm_model = train_lstm(train_feat, feature_cols, lstm_scaler, **lstm_hyperparams)
 
     test_feat_scaled = test_feat.copy()
     test_feat_scaled[feature_cols] = lstm_scaler.transform(test_feat[feature_cols])
     lstm_result = evaluate_sequence_model_at_final_cycle(
-        lstm_model, test_feat_scaled, feature_cols, rul_true, LSTM_WINDOW
+        lstm_model, test_feat_scaled, feature_cols, rul_true, lstm_window
     )
+
+    # rmse/nasa_score below are the raw-label numbers (scored against
+    # RUL_FDxxx.txt as-is) -- the additional *_label / *_subset columns are
+    # the other two labeling-convention views from _labeling_convention_metrics,
+    # not a "which one is right" pick (see docs/Log.md, 2026-09-12 investigation).
+    def _test_row(model_name: str, result: dict) -> dict:
+        return {
+            "dataset": dataset, "model": model_name, "split": "test",
+            "rmse": result["rmse"], "nasa_score": result["nasa_score"],
+            "rmse_capped_label": result["rmse_capped_label"],
+            "nasa_score_capped_label": result["nasa_score_capped_label"],
+            "rmse_below_cap_subset": result["rmse_below_cap_subset"],
+            "nasa_score_below_cap_subset": result["nasa_score_below_cap_subset"],
+            "n_below_cap_subset": result["n_below_cap_subset"],
+            "pct_below_cap_subset": result["pct_below_cap_subset"],
+        }
 
     metric_rows = [
         {"dataset": dataset, "model": "xgboost", "split": "cv",
          "rmse": sum(cv_rmses) / len(cv_rmses), "nasa_score": np.nan},
-        {"dataset": dataset, "model": "xgboost_baseline_uncapped", "split": "test",
-         "rmse": baseline_result["rmse"], "nasa_score": baseline_result["nasa_score"]},
-        {"dataset": dataset, "model": "xgboost", "split": "test",
-         "rmse": xgb_result["rmse"], "nasa_score": xgb_result["nasa_score"]},
-        {"dataset": dataset, "model": "lstm", "split": "test",
-         "rmse": lstm_result["rmse"], "nasa_score": lstm_result["nasa_score"]},
+        _test_row("xgboost_baseline_uncapped", baseline_result),
+        _test_row("xgboost", xgb_result),
+        _test_row("lstm", lstm_result),
     ]
 
     return {
