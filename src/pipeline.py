@@ -1,7 +1,8 @@
 # The only script in src/: ties load -> regimes -> features -> models ->
 # scoring together for one dataset or all four, writes metrics and
 # diagnostic figures to disk, and prints the two required outputs
-# (FD001 final-model test RMSE, headline late-side reduction %) explicitly.
+# (FD001 final-model test RMSE, headline reduction in late predictions %)
+# explicitly.
 
 import argparse
 from functools import partial
@@ -37,6 +38,8 @@ from src.scoring import (
     evaluate_at_final_cycle,
     evaluate_sequence_model_at_final_cycle,
     group_kfold_cv,
+    late_prediction_count_reduction_pct,
+    late_prediction_pct,
     late_side_reduction_pct,
 )
 
@@ -84,9 +87,14 @@ def run_dataset(dataset: str) -> dict:
     baseline_result = evaluate_at_final_cycle(baseline_model, test_feat, feature_cols, rul_true)
     xgb_result = evaluate_at_final_cycle(xgb_model, test_feat, feature_cols, rul_true)
 
-    reduction_pct = late_side_reduction_pct(
+    penalty_reduction_pct = late_side_reduction_pct(
         baseline_result["y_true"], baseline_result["y_pred"], xgb_result["y_pred"]
     )
+    count_reduction_pct = late_prediction_count_reduction_pct(
+        baseline_result["y_true"], baseline_result["y_pred"], xgb_result["y_pred"]
+    )
+    late_pct_baseline = late_prediction_pct(baseline_result["y_true"], baseline_result["y_pred"])
+    late_pct_capped = late_prediction_pct(xgb_result["y_true"], xgb_result["y_pred"])
 
     lstm_scaler = fit_lstm_scaler(train_feat, feature_cols)
     lstm_model = train_lstm(train_feat, feature_cols, lstm_scaler, **lstm_hyperparams)
@@ -123,7 +131,10 @@ def run_dataset(dataset: str) -> dict:
 
     return {
         "metric_rows": metric_rows,
-        "late_reduction_pct": reduction_pct,
+        "late_penalty_reduction_pct": penalty_reduction_pct,
+        "late_count_reduction_pct": count_reduction_pct,
+        "late_pct_baseline_uncapped": late_pct_baseline,
+        "late_pct_capped": late_pct_capped,
         "lstm_y_true": lstm_result["y_true"],
         "lstm_y_pred": lstm_result["y_pred"],
     }
@@ -146,14 +157,25 @@ def _upsert_rows(path: Path, new_rows: pd.DataFrame, key_cols: list[str]) -> pd.
     return combined
 
 
-def update_late_reduction(dataset: str, reduction_pct: float) -> pd.DataFrame:
-    row = pd.DataFrame([{"dataset": dataset, "late_side_reduction_pct": reduction_pct}])
+def update_late_reduction(dataset: str, late_stats: dict) -> pd.DataFrame:
+    row = pd.DataFrame([{
+        "dataset": dataset,
+        "late_pct_baseline_uncapped": late_stats["late_pct_baseline_uncapped"],
+        "late_pct_capped": late_stats["late_pct_capped"],
+        "late_count_reduction_pct": late_stats["late_count_reduction_pct"],
+        "late_penalty_reduction_pct": late_stats["late_penalty_reduction_pct"],
+    }])
     combined = _upsert_rows(LATE_REDUCTION_PATH, row, key_cols=["dataset"])
 
     real = combined[combined["dataset"] != "headline_mean"]
     if set(DATASETS).issubset(set(real["dataset"])):
-        headline_val = real["late_side_reduction_pct"].mean()
-        headline_row = pd.DataFrame([{"dataset": "headline_mean", "late_side_reduction_pct": headline_val}])
+        headline_row = pd.DataFrame([{
+            "dataset": "headline_mean",
+            "late_pct_baseline_uncapped": real["late_pct_baseline_uncapped"].mean(),
+            "late_pct_capped": real["late_pct_capped"].mean(),
+            "late_count_reduction_pct": real["late_count_reduction_pct"].mean(),
+            "late_penalty_reduction_pct": real["late_penalty_reduction_pct"].mean(),
+        }])
         combined = _upsert_rows(LATE_REDUCTION_PATH, headline_row, key_cols=["dataset"])
 
     return combined
@@ -177,9 +199,9 @@ def _plot_pred_vs_true(y_true: np.ndarray, y_pred: np.ndarray, dataset: str, mod
 def _plot_late_reduction(late_df: pd.DataFrame, path: Path) -> None:
     real = late_df[late_df["dataset"] != "headline_mean"].sort_values("dataset")
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.bar(real["dataset"], real["late_side_reduction_pct"])
-    ax.set_ylabel("late-side penalty reduction (%)")
-    ax.set_title("Capped vs. uncapped RUL: late-side penalty reduction")
+    ax.bar(real["dataset"], real["late_count_reduction_pct"])
+    ax.set_ylabel("reduction in late predictions (%)")
+    ax.set_title("Capped vs. uncapped RUL: reduction in share of late predictions")
     ax.set_ylim(0, 105)
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -211,10 +233,11 @@ def main() -> None:
         result = run_dataset(dataset)
 
         _upsert_rows(METRICS_PATH, pd.DataFrame(result["metric_rows"]), key_cols=["dataset", "model", "split"])
-        late_df = update_late_reduction(dataset, result["late_reduction_pct"])
+        late_df = update_late_reduction(dataset, result)
 
         _print_metric_rows(result["metric_rows"])
-        print(f"  late-side reduction vs uncapped baseline: {result['late_reduction_pct']:.2f}%")
+        print(f"  late predictions: {result['late_pct_baseline_uncapped']:.1f}% (uncapped baseline) -> "
+              f"{result['late_pct_capped']:.1f}% (capped), a {result['late_count_reduction_pct']:.2f}% reduction")
 
         if dataset == "FD001":
             _plot_pred_vs_true(
@@ -239,8 +262,8 @@ def main() -> None:
     late_df = pd.read_csv(LATE_REDUCTION_PATH) if LATE_REDUCTION_PATH.exists() else pd.DataFrame()
     headline = late_df[late_df.get("dataset") == "headline_mean"] if not late_df.empty else late_df
     if not headline.empty:
-        print(f"2. Late-side penalty reduction, headline mean across datasets: "
-              f"{headline['late_side_reduction_pct'].iloc[0]:.2f}%")
+        print(f"2. Reduction in late predictions, headline mean across datasets: "
+              f"{headline['late_count_reduction_pct'].iloc[0]:.2f}%")
     else:
         print("2. Not all four datasets run yet -- headline reduction unavailable")
 

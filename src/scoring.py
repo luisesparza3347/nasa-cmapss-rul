@@ -17,8 +17,9 @@ N_SPLITS = 7
 
 # GroupKFold has no random_state -- its split is a deterministic assignment
 # of groups to folds (no shuffling), not a randomized one. The seed=42 rule
-# still applies to the model trained inside each fold.
-SEED = 42
+# still applies to the model trained inside each fold (enforced in
+# models.py, not here -- group_kfold_cv takes an already-configured
+# estimator factory).
 
 
 def rmse(y_true, y_pred) -> float:
@@ -51,15 +52,39 @@ def late_side_penalty_sum(y_true, y_pred) -> float:
 
 
 def late_side_reduction_pct(y_true, y_pred_baseline, y_pred_final) -> float:
-    """Percentage drop in summed late-side penalty, final model vs the
-    uncapped-RUL baseline (required output 2 in CLAUDE.md). Positive means
-    the final model carries less total late-failure risk."""
+    """Percentage drop in summed late-side *penalty*, final model vs the
+    uncapped-RUL baseline. The NASA score's exponential term means a
+    handful of very-late predictions can dominate this figure -- see
+    late_prediction_pct for the more interpretable count-based version."""
     baseline_penalty = late_side_penalty_sum(y_true, y_pred_baseline)
     final_penalty = late_side_penalty_sum(y_true, y_pred_final)
 
     assert baseline_penalty > 0, "baseline has zero late-side penalty -- reduction % is undefined"
 
     return (baseline_penalty - final_penalty) / baseline_penalty * 100
+
+
+def late_prediction_pct(y_true, y_pred) -> float:
+    """Share of predictions that are late (d = predicted - true >= 0), as a
+    plain percentage of engines -- not weighted by how late, unlike the
+    penalty-sum version above. This is what most people mean by "how often
+    does it predict late," and required output 2 (CLAUDE.md) is reported
+    against this, not the penalty sum."""
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    d = y_pred - y_true
+    return float((d >= 0).mean() * 100)
+
+
+def late_prediction_count_reduction_pct(y_true, y_pred_baseline, y_pred_final) -> float:
+    """Percentage drop in the *share* of late predictions, final model vs
+    the uncapped-RUL baseline. Required output 2 in CLAUDE.md."""
+    baseline_pct = late_prediction_pct(y_true, y_pred_baseline)
+    final_pct = late_prediction_pct(y_true, y_pred_final)
+
+    assert baseline_pct > 0, "baseline has zero late predictions -- reduction % is undefined"
+
+    return (baseline_pct - final_pct) / baseline_pct * 100
 
 
 def last_cycle_per_unit(df: pd.DataFrame) -> pd.DataFrame:
@@ -75,22 +100,20 @@ def last_cycle_per_unit(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _labeling_convention_metrics(y_true: np.ndarray, y_pred: np.ndarray, rul_cap: int = RUL_CAP) -> dict:
-    """Three descriptively-labeled scorings of the same predictions, not one
-    "correct" one picked for you -- which convention published benchmarks
-    used for their test labels (raw vs. capped-at-125) was never verified,
-    so this reports all three rather than asserting an unconfirmed match:
-    raw-label (score against RUL_FDxxx.txt as-is, the stricter measure),
-    capped-label (score against min(true, cap) -- what a chunk of the
-    C-MAPSS literature does to test labels too, matching train), and
-    below-cap-subset (only test units whose true RUL is already <= cap,
-    where raw and capped labels are identical by construction -- so this
-    one carries no convention ambiguity at all)."""
+    """Two additional, descriptively-labeled scorings alongside the plain
+    (raw-label) rmse/nasa_score a caller already has -- not because one is
+    "correct": which convention published benchmarks used for their test
+    labels (raw vs. capped-at-125) was never verified, so this reports both
+    rather than asserting an unconfirmed match. capped-label scores against
+    min(true, cap), what a chunk of the C-MAPSS literature does to test
+    labels too, matching train. below-cap-subset restricts to only test
+    units whose true RUL is already <= cap, where raw and capped labels are
+    identical by construction -- so this one carries no convention
+    ambiguity at all."""
     y_true_capped = np.minimum(y_true, rul_cap)
     below_mask = y_true <= rul_cap
 
     return {
-        "rmse_raw_label": rmse(y_true, y_pred),
-        "nasa_score_raw_label": nasa_score(y_true, y_pred),
         "rmse_capped_label": rmse(y_true_capped, y_pred),
         "nasa_score_capped_label": nasa_score(y_true_capped, y_pred),
         "rmse_below_cap_subset": rmse(y_true[below_mask], y_pred[below_mask]),

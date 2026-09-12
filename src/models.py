@@ -204,9 +204,12 @@ def train_lstm(
     return model
 
 
-# Per-dataset LSTM hyperparameter overrides (window/units/dropout/num_layers)
-# found in notebooks/eda_tuning_fd002_fd004.ipynb -- same rationale as
-# XGB_HYPERPARAMS: FD001/FD003 keep the untouched defaults above.
+# Per-dataset LSTM hyperparameter overrides (window/units/dropout/num_layers/
+# bidirectional). Unlike XGB_HYPERPARAMS, all four are empty on purpose:
+# notebooks/eda_tuning_fd002_fd004.ipynb tried 4 reasoned FD002/FD004
+# variants (more units, a stacked layer, a shorter window, bidirectional)
+# and none beat the plain defaults above, across two reruns -- a genuine
+# negative result, not an unfinished search.
 LSTM_HYPERPARAMS: dict[str, dict] = {
     "FD001": {},
     "FD002": {},
@@ -214,80 +217,3 @@ LSTM_HYPERPARAMS: dict[str, dict] = {
     "FD004": {},
 }
 
-
-if __name__ == "__main__":
-    from src.features import (
-        add_rolling_features,
-        add_rul_targets,
-        add_savgol_features,
-        find_constant_sensors,
-    )
-    from src.load import DATASETS, load_rul, load_test, load_train
-    from src.regimes import apply_regimes, fit_regimes
-    from src.scoring import (
-        N_SPLITS,
-        evaluate_at_final_cycle,
-        evaluate_sequence_model_at_final_cycle,
-        group_kfold_cv,
-        late_side_reduction_pct,
-    )
-
-    late_reductions = []
-
-    for dataset in DATASETS:
-        train = load_train(dataset)
-        test = load_test(dataset)
-        rul_true = load_rul(dataset)
-
-        train_norm, fitted = fit_regimes(train)
-        test_norm = apply_regimes(test, fitted)
-
-        constant_sensors = find_constant_sensors(train_norm)
-        varying_sensors = [s for s in SENSOR_COLS if s not in constant_sensors]
-
-        train_feat = add_rolling_features(train_norm, varying_sensors)
-        train_feat = add_savgol_features(train_feat, varying_sensors)
-        train_feat = add_rul_targets(train_feat)
-
-        test_feat = add_rolling_features(test_norm, varying_sensors)
-        test_feat = add_savgol_features(test_feat, varying_sensors)
-
-        feature_cols = build_feature_cols(varying_sensors)
-
-        cv_rmses = group_kfold_cv(make_xgb_model, train_feat, feature_cols, "rul_capped")
-
-        baseline_model = train_uncapped_baseline(train_feat, feature_cols)
-        xgb_model = train_xgboost(train_feat, feature_cols)
-
-        baseline_result = evaluate_at_final_cycle(baseline_model, test_feat, feature_cols, rul_true)
-        xgb_result = evaluate_at_final_cycle(xgb_model, test_feat, feature_cols, rul_true)
-
-        late_reduction = late_side_reduction_pct(
-            baseline_result["y_true"], baseline_result["y_pred"], xgb_result["y_pred"]
-        )
-        late_reductions.append(late_reduction)
-
-        print(f"{dataset}:")
-        print(f"  {len(feature_cols)} feature columns ({len(varying_sensors)} varying sensors)")
-        print(f"  GroupKFold(n_splits={N_SPLITS}) CV RMSE (capped target): "
-              f"{[round(r, 2) for r in cv_rmses]}, mean={sum(cv_rmses) / len(cv_rmses):.2f}")
-        print(f"  test @ final cycle -- uncapped baseline: "
-              f"rmse={baseline_result['rmse']:.2f}, nasa_score={baseline_result['nasa_score']:.2f}")
-        print(f"  test @ final cycle -- xgboost (capped):  "
-              f"rmse={xgb_result['rmse']:.2f}, nasa_score={xgb_result['nasa_score']:.2f}")
-        print(f"  late-side penalty reduction vs uncapped baseline: {late_reduction:.2f}%")
-
-        lstm_scaler = fit_lstm_scaler(train_feat, feature_cols)
-        lstm_model = train_lstm(train_feat, feature_cols, lstm_scaler)
-
-        test_feat_scaled = test_feat.copy()
-        test_feat_scaled[feature_cols] = lstm_scaler.transform(test_feat[feature_cols])
-        lstm_result = evaluate_sequence_model_at_final_cycle(
-            lstm_model, test_feat_scaled, feature_cols, rul_true, LSTM_WINDOW
-        )
-        print(f"  test @ final cycle -- lstm:               "
-              f"rmse={lstm_result['rmse']:.2f}, nasa_score={lstm_result['nasa_score']:.2f}")
-
-    print(f"\nheadline: mean late-side penalty reduction across all four datasets: "
-          f"{sum(late_reductions) / len(late_reductions):.2f}%")
-    print(f"  per-dataset: {[round(r, 2) for r in late_reductions]}")
