@@ -23,6 +23,14 @@ from src.load import SENSOR_COLS
 # cost, so seed=42 means what CLAUDE.md says it should mean for the LSTM too.
 tf.config.experimental.enable_op_determinism()
 
+# Measured: FD001 LSTM test RMSE still varies run to run even with the
+# above (15.50 / 14.79), and pinning intra/inter-op thread count to 1
+# didn't close the gap either (15.77 / 15.35) -- some remaining op in this
+# TF/Keras version pair isn't going through a deterministic path regardless
+# (see docs/Log.md). Not chasing further: not a required output, and the
+# thread pin was reverted since it cost training speed for no measured
+# benefit. LSTM RMSE should be read as +/- ~0.5-1.0 run to run, not exact.
+
 SEED = 42
 
 # cycle, operational settings, and the regime label aren't sensors, so the
