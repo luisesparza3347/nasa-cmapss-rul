@@ -46,7 +46,7 @@ An engine at cycle 5 and the same engine at cycle 80 both look equally healthy i
 
 That decision has a real, quantified cost: since the model never sees a training example labeled above 125, it can't confidently predict much higher than that either. For any test engine whose recorded history happens to stop while it's still well above the cap, the model's prediction is capped by what it learned, and the true answer isn't. That's an unavoidable blind spot for it, and one that most published C-MAPSS work also handles this exact way. **This is exactly why the results below report more than one RMSE number**; see the explanation under Results.
 
-## Required outputs
+## Headline results
 
 1. **FD001 test RMSE, final model (LSTM), mean across 5 seeds: 15.03 ± 0.86.** The LSTM was chosen as the final model because it beats XGBoost's RMSE on every one of the four datasets, with zero hyperparameter tuning. A single run's RMSE drifts noticeably between identical reruns (a documented TensorFlow CPU non-determinism quirk that two separate fixes didn't fully close), so this is reported as a mean and standard deviation across 5 seeds rather than one number; see `docs/dataset-reference.md` for the individual per-seed values and why the drift exists.
 2. **Reduction in late predictions from the RUL cap: 24.82%.** See the ablation below for what this means and how it's computed.
@@ -100,7 +100,7 @@ The last column is the drop in the NASA score's *summed* late-side penalty rathe
 ## Reproduce
 
 ```
-git clone <this repository's URL>
+git clone https://github.com/luisesparza3347/nasa-cmapss-rul.git
 cd nasa-cmapss-rul
 python -m venv .venv
 .venv\Scripts\Activate.ps1        # PowerShell, on Windows
