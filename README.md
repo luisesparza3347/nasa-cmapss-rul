@@ -48,7 +48,7 @@ That decision has a real, quantified cost: since the model never sees a training
 
 ## Required outputs
 
-1. **FD001 test RMSE, final model (LSTM), mean across 5 seeds: 15.03 ± 0.86.** The LSTM was chosen as the final model because it beats XGBoost's RMSE on every one of the four datasets, with zero hyperparameter tuning. A single run's RMSE drifts noticeably between identical reruns (a documented TensorFlow CPU non-determinism quirk that two separate fixes didn't fully close), so this is reported as a mean and standard deviation across 5 seeds rather than one number; see `docs/Log.md` for the individual per-seed values and why the drift exists.
+1. **FD001 test RMSE, final model (LSTM), mean across 5 seeds: 15.03 ± 0.86.** The LSTM was chosen as the final model because it beats XGBoost's RMSE on every one of the four datasets, with zero hyperparameter tuning. A single run's RMSE drifts noticeably between identical reruns (a documented TensorFlow CPU non-determinism quirk that two separate fixes didn't fully close), so this is reported as a mean and standard deviation across 5 seeds rather than one number; see `docs/dataset-reference.md` for the individual per-seed values and why the drift exists.
 2. **Reduction in late predictions from the RUL cap: 24.82%.** See the ablation below for what this means and how it's computed.
 
 ## Results

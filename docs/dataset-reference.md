@@ -79,6 +79,20 @@ What published work reaches. Landing outside these ranges means something is wro
 
 FD001 under 11 is the leakage tripwire, not a good result.
 
+## LSTM run-to-run variance
+
+FD001 LSTM test RMSE is reported as a mean and standard deviation across 5 seeds, not a single number, because a single run does not reproduce exactly. Every other metric in this project (XGBoost, k-means, GroupKFold splits) is stable across reruns; the LSTM is not.
+
+| Seed | 42 | 43 | 44 | 45 | 46 |
+|---|---|---|---|---|---|
+| Test RMSE | 14.56 | 16.44 | 13.86 | 14.94 | 15.37 |
+
+Mean 15.03, standard deviation 0.86, n=5.
+
+Two fixes were tried and neither closed the gap. `tf.config.experimental.enable_op_determinism()` alone was not enough: two runs with identical seed, code, and data (confirmed by XGBoost's numbers matching exactly between them, so the input side was not the cause) still produced different LSTM RMSE, 15.50 versus 14.79. Pinning `tf.config.threading.set_intra_op_parallelism_threads(1)` and `set_inter_op_parallelism_threads(1)` was tried next, forcing single-threaded CPU ops instead of an auto-sized pool; back-to-back FD001 reruns still varied, 15.77 versus 15.35. The thread pinning was reverted, since it cost training speed with no measured benefit. `enable_op_determinism()` was kept, since it is harmless and may still help somewhat. A recurring `use_unbounded_threadpool` attribute-mismatch warning in every run's output points at some op in this TensorFlow 2.21.0 / Keras 3.15.1 pairing not taking a deterministic path, but this was not chased further, since it is not one of the project's required outputs.
+
+Read FD001 LSTM test RMSE as ±0.5 to 1.0 run to run, not an exact reproducible number.
+
 ## Feature parameters
 
 - Rolling mean, rolling standard deviation, rolling window slope, per unit per sensor
