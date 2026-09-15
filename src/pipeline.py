@@ -248,7 +248,7 @@ def main() -> None:
         if set(DATASETS).issubset(set(late_df[late_df["dataset"] != "headline_mean"]["dataset"])):
             _plot_late_reduction(late_df, FIGURES_DIR / "late_side_reduction.png")
 
-    print("\n=== required outputs ===")
+    print("\n=== headline results ===")
 
     metrics_df = pd.read_csv(METRICS_PATH) if METRICS_PATH.exists() else pd.DataFrame()
     fd001_final = metrics_df[
