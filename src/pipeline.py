@@ -1,6 +1,6 @@
 # The only script in src/: ties load -> regimes -> features -> models ->
 # scoring together for one dataset or all four, writes metrics and
-# diagnostic figures to disk, and prints the two required outputs
+# diagnostic figures to disk, and prints the two headline numbers
 # (FD001 final-model test RMSE, headline reduction in late predictions %)
 # explicitly.
 
@@ -108,7 +108,7 @@ def run_dataset(dataset: str) -> dict:
     # rmse/nasa_score below are the raw-label numbers (scored against
     # RUL_FDxxx.txt as-is) -- the additional *_label / *_subset columns are
     # the other two labeling-convention views from _labeling_convention_metrics,
-    # not a "which one is right" pick (see docs/Log.md, 2026-09-12 investigation).
+    # not a "which one is right" pick (see docs/dataset-reference.md).
     def _test_row(model_name: str, result: dict) -> dict:
         return {
             "dataset": dataset, "model": model_name, "split": "test",
@@ -255,9 +255,11 @@ def main() -> None:
         (metrics_df["dataset"] == "FD001") & (metrics_df["model"] == FINAL_MODEL) & (metrics_df["split"] == "test")
     ]
     if not fd001_final.empty:
-        print(f"1. FD001 test RMSE, final model ({FINAL_MODEL}): {fd001_final['rmse'].iloc[0]:.2f}")
+        print(f"1. FD001 test RMSE, final model ({FINAL_MODEL}), capped-label, this run's seed: "
+              f"{fd001_final['rmse_capped_label'].iloc[0]:.2f} "
+              f"(README headline is a 5-seed mean; see docs/dataset-reference.md)")
     else:
-        print("1. FD001 not yet run -- required output 1 unavailable")
+        print("1. FD001 not yet run -- test RMSE unavailable")
 
     late_df = pd.read_csv(LATE_REDUCTION_PATH) if LATE_REDUCTION_PATH.exists() else pd.DataFrame()
     headline = late_df[late_df.get("dataset") == "headline_mean"] if not late_df.empty else late_df

@@ -5,8 +5,8 @@
 # (so one trained model handles both full 30-cycle training windows and
 # the shorter real sequences FD002/FD004 test units have), and a single
 # unit-based validation split for early stopping rather than GroupKFold
-# (the standard approach for neural nets, and CLAUDE.md's CV requirement
-# is already satisfied by XGBoost).
+# (the standard approach for neural nets; GroupKFold CV is already
+# covered by XGBoost).
 
 import numpy as np
 import tensorflow as tf
@@ -20,7 +20,8 @@ from src.load import SENSOR_COLS
 # TF's default CPU ops are multi-threaded and not perfectly order-independent
 # in floating point, so tf.random.set_seed alone doesn't make LSTM training
 # byte-reproducible run to run. This pins it down, at a modest training-speed
-# cost, so seed=42 means what CLAUDE.md says it should mean for the LSTM too.
+# cost, so the fixed seed=42 means the same thing for the LSTM as it does
+# everywhere else in this project.
 tf.config.experimental.enable_op_determinism()
 
 # Measured: FD001 LSTM test RMSE still varies run to run even with the
@@ -63,9 +64,9 @@ def make_xgb_model(**hyperparams) -> xgb.XGBRegressor:
 def train_uncapped_baseline(train_df, feature_cols: list[str], **hyperparams) -> xgb.XGBRegressor:
     """Ablation baseline: identical model and features to train_xgboost,
     trained on uncapped `rul` instead of `rul_capped`. Isolates the effect
-    of the RUL cap, not algorithm choice, per the locked decision 3 cap.
-    Takes the same hyperparams as train_xgboost so tuning doesn't also
-    introduce a hyperparameter difference into that isolation."""
+    of the RUL cap itself, not algorithm choice. Takes the same hyperparams
+    as train_xgboost so tuning doesn't also introduce a hyperparameter
+    difference into that isolation."""
     model = make_xgb_model(**hyperparams)
     model.fit(train_df[feature_cols], train_df["rul"])
     return model

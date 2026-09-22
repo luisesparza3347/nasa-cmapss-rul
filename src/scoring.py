@@ -1,5 +1,5 @@
-# RMSE, the NASA asymmetric scoring function, and the two evaluation paths
-# CLAUDE.md requires kept separate: GroupKFold cross-validation on training
+# RMSE, the NASA asymmetric scoring function, and two evaluation paths
+# kept intentionally separate: GroupKFold cross-validation on training
 # data, and one-prediction-per-engine scoring at each test unit's final
 # recorded cycle against RUL_FDxxx.txt.
 
@@ -68,8 +68,8 @@ def late_prediction_pct(y_true, y_pred) -> float:
     """Share of predictions that are late (d = predicted - true >= 0), as a
     plain percentage of engines -- not weighted by how late, unlike the
     penalty-sum version above. This is what most people mean by "how often
-    does it predict late," and required output 2 (CLAUDE.md) is reported
-    against this, not the penalty sum."""
+    does it predict late," and this is the headline late-prediction-
+    reduction metric reported in the README, not the penalty sum."""
     y_true = np.asarray(y_true, dtype=np.float64)
     y_pred = np.asarray(y_pred, dtype=np.float64)
     d = y_pred - y_true
@@ -78,7 +78,7 @@ def late_prediction_pct(y_true, y_pred) -> float:
 
 def late_prediction_count_reduction_pct(y_true, y_pred_baseline, y_pred_final) -> float:
     """Percentage drop in the *share* of late predictions, final model vs
-    the uncapped-RUL baseline. Required output 2 in CLAUDE.md."""
+    the uncapped-RUL baseline. The headline ablation metric in the README."""
     baseline_pct = late_prediction_pct(y_true, y_pred_baseline)
     final_pct = late_prediction_pct(y_true, y_pred_final)
 
